@@ -1,4 +1,16 @@
-import {initFileShaders, vec4, mat4, flatten, perspective, lookAt, rotateX, rotateY, rotateZ, translate} from "./helperfunctions.js";
+import {
+    initFileShaders,
+    vec4,
+    mat4,
+    flatten,
+    perspective,
+    lookAt,
+    rotateX,
+    rotateY,
+    rotateZ,
+    translate,
+    vec2
+} from "./helperfunctions.js";
 
 "use strict";
 let gl:WebGLRenderingContext;
@@ -33,6 +45,16 @@ let anisotropic_ext;
 let uTextureSampler:WebGLUniformLocation;
 let blur1tex:WebGLTexture;
 let blur1image:HTMLImageElement;
+
+let bufferId:WebGLBuffer;
+let squarePoints:any[];
+
+let positionData:vec4[];
+let colorData:vec4[];
+let normalVectors:vec4[];
+
+let drawSquares:GLint;
+let squaresActive:WebGLUniformLocation;
 
 window.onload = function init() {
 
@@ -84,6 +106,7 @@ window.onload = function init() {
     umv = gl.getUniformLocation(program, "mv");
     uproj = gl.getUniformLocation(program, "proj");
     uTextureSampler = gl.getUniformLocation(program, "textureSampler");
+    squaresActive = gl.getUniformLocation(program, "squaresActive");
 
     //set up basic perspective viewing
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
@@ -102,7 +125,7 @@ function initTextures(){
     blur1tex = gl.createTexture();
     blur1image = new Image();
     blur1image.onload = function() { handleTextureLoaded(blur1image, blur1tex);};
-    blur1image.src = 'blur1.png'
+    blur1image.src = 'blur1.png';
 }
 
 function handleTextureLoaded(image:HTMLImageElement, texture:WebGLTexture){
@@ -110,9 +133,6 @@ function handleTextureLoaded(image:HTMLImageElement, texture:WebGLTexture){
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);  //disagreement over what direction Y axis goes
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
     gl.generateMipmap(gl.TEXTURE_2D);
-
-    //gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    //gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameterf(gl.TEXTURE_2D, anisotropic_ext.TEXTURE_MAX_ANISOTROPY_EXT, 4);
@@ -128,10 +148,8 @@ function createMesh(input:string){
     let numbers:string[] = input.split(/\s+/); //split on white space
     let numVerts:GLint = parseInt(numbers[0]); //first element is number of vertices
     let numTris:GLint = parseInt(numbers[1]); //second element is number of triangles
-    let positionData:vec4[] = [];
-    let colorData:vec4[] = [];
-    console.log(parseInt(numbers[0]));
-    console.log(parseInt(numbers[1]));
+    positionData = [];
+    colorData = [];
 
 
     //three numbers at a time for xyz
@@ -154,7 +172,7 @@ function createMesh(input:string){
         indexData.push(parseInt(numbers[i+3]));
     }
 
-    let normalVectors:vec4[] = [];
+    normalVectors = [];
 
     //at first, we have no normal vectors
     for(let i:number = 0; i < positionData.length; i++){
@@ -200,6 +218,8 @@ function createMesh(input:string){
         meshVertexData.push(normalVectors[i]);
     }
 
+    makeSquares();
+
 
     //buffer vertex data and enable vPosition attribute
     meshVertexBufferID = gl.createBuffer();
@@ -207,11 +227,11 @@ function createMesh(input:string){
     gl.bufferData(gl.ARRAY_BUFFER, flatten(meshVertexData), gl.STATIC_DRAW);
 
     let vPosition:GLint = gl.getAttribLocation(program, "vPosition");
-    gl.vertexAttribPointer(vPosition, 4, gl.FLOAT, false, 48, 0); //stride is 32 bytes total for position, normal
+    gl.vertexAttribPointer(vPosition, 4, gl.FLOAT, false, 48, 0);
     gl.enableVertexAttribArray(vPosition);
 
     let vColor:GLint = gl.getAttribLocation(program, "vColor");
-    gl.vertexAttribPointer(vColor, 4, gl.FLOAT, false, 48, 16); //stride is 32 bytes total for position, normal
+    gl.vertexAttribPointer(vColor, 4, gl.FLOAT, false, 48, 16);
     gl.enableVertexAttribArray(vColor);
 
     let vNormal:GLint = gl.getAttribLocation(program, "vNormal");
@@ -224,6 +244,61 @@ function createMesh(input:string){
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(indexData), gl.STATIC_DRAW);
 }
 
+function makeSquares() {
+    squarePoints = []; //empty array
+
+    for(let i:number = 0; i < positionData.length; i++) {
+        let vT:vec4 = new vec4(1, 0, 0, 0);
+        let vN:vec4 = normalVectors[i];
+
+        //if normal an tangent are the same use a different vector
+        if(vT.equals(vN))
+            vT = new vec4(0, 1, 0, 0);
+
+        let vB:vec4 = (vN.cross(vT));//.normalize();
+        vT = vN.cross(vB);
+
+        let color:vec4 = colorData[i];
+
+        let translationMatrix:mat4 = new mat4(vT, vB, vN, new vec4(positionData[i][0], positionData[i][1], positionData[i][2], 1));
+
+        squarePoints.push(translationMatrix.mult(new vec4(-1, -1, 0, 1)));
+        squarePoints.push(color); //color
+        squarePoints.push(new vec2(0, 0)); //texture coordinates, bottom left
+        squarePoints.push(translationMatrix.mult(new vec4(1, -1, 0, 1)));
+        squarePoints.push(color);
+        squarePoints.push(new vec2(1, 0)); //texture coordinates, bottom right
+        squarePoints.push(translationMatrix.mult(new vec4(1, 1, 0, 1)));
+        squarePoints.push(color);
+        squarePoints.push(new vec2(1, 1)); //texture coordinates, top right
+        squarePoints.push(translationMatrix.mult(new vec4(-1, -1, 0, 1)));
+        squarePoints.push(color); //color
+        squarePoints.push(new vec2(0, 0)); //texture coordinates, bottom left
+        squarePoints.push(translationMatrix.mult(new vec4(-1, 1, 0, 1)));
+        squarePoints.push(color);
+        squarePoints.push(new vec2(0, 1)); //texture coordinates, top left
+        squarePoints.push(translationMatrix.mult(new vec4(1, 1, 0, 1)));
+        squarePoints.push(color);
+        squarePoints.push(new vec2(1, 1)); //texture coordinates, top right
+    }
+
+    //create a buffer for sqaurePoints
+    bufferId = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufferId);
+    gl.bufferData(gl.ARRAY_BUFFER, flatten(squarePoints), gl.STATIC_DRAW);
+
+    let vSquarePosition = gl.getAttribLocation(program, "vSquarePosition");
+    gl.vertexAttribPointer(vSquarePosition, 4, gl.FLOAT, false, 40, 0); //stride is 56 bytes total for position, normal, tangent texcoord
+    gl.enableVertexAttribArray(vSquarePosition);
+
+    let vSquareColor = gl.getAttribLocation(program, "vSquareColor");
+    gl.vertexAttribPointer(vSquareColor, 4, gl.FLOAT, false, 40, 16); //stride is 56 bytes total for position, normal, tangent texcoord
+    gl.enableVertexAttribArray(vSquareColor);
+
+    let vTexCoord = gl.getAttribLocation(program, "texCoord");
+    gl.vertexAttribPointer(vTexCoord, 2, gl.FLOAT, false, 40, 32);
+    gl.enableVertexAttribArray(vTexCoord);
+}
 //update rotation angles based on mouse movement
 function mouse_drag(event:MouseEvent){
     let thetaY:number, thetaX:number;
@@ -257,25 +332,63 @@ function mouse_up(){
 function render(){
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    mv = lookAt(new vec4(0, 0, 100, 1), new vec4(0, 0, 0, 1), new vec4(0, 1, 0, 0));
-    mv = mv.mult(rotateY(yAngle).mult(rotateX(xAngle)));
-    mv = mv.mult(translate(0, 100, 0));
-    gl.uniformMatrix4fv(umv, false, mv.flatten());
-
     if(meshVertexData.length > 0) {
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBufferID);
+        drawSquares = 0;
+        gl.uniform1i(squaresActive, drawSquares);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, meshVertexBufferID);
+        gl.bufferData(gl.ARRAY_BUFFER, flatten(meshVertexData), gl.STATIC_DRAW);
+
+        let vPosition:GLint = gl.getAttribLocation(program, "vPosition");
+        gl.vertexAttribPointer(vPosition, 4, gl.FLOAT, false, 48, 0);
+        gl.enableVertexAttribArray(vPosition);
+
+        let vColor:GLint = gl.getAttribLocation(program, "vColor");
+        gl.vertexAttribPointer(vColor, 4, gl.FLOAT, false, 48, 16);
+        gl.enableVertexAttribArray(vColor);
+
+        let vNormal:GLint = gl.getAttribLocation(program, "vNormal");
+        gl.vertexAttribPointer(vNormal, 4, gl.FLOAT, false, 48, 32);
+        gl.enableVertexAttribArray(vNormal);
+
         //note that we're using gl.drawElements() here instead of drawArrays()
         //this allows us to make use of shared vertices between triangles without
         //having to repeat the vertex data.  However, if each vertex has additional
         //attributes like color, normal vector, texture coordinates, etc that are not
         //shared between triangles like position is, than this might cause problems
 
+
+        mv = lookAt(new vec4(0, 0, 150, 1), new vec4(0, 0, 0, 1), new vec4(0, 1, 0, 0));
+        mv = mv.mult(rotateY(yAngle).mult(rotateX(xAngle)));
+
+        mv = mv.mult(translate(-75, 90, 0));
+        gl.uniformMatrix4fv(umv, false, mv.flatten());
+        gl.drawArrays(gl.POINTS, 0, meshVertexData.length/3);
+        console.log("DRAW CALL");
+
+
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, blur1tex);
         gl.uniform1i(uTextureSampler, 0);
 
+        gl.bindBuffer(gl.ARRAY_BUFFER, bufferId);
+        gl.bufferData(gl.ARRAY_BUFFER, flatten(squarePoints), gl.STATIC_DRAW);
 
-        gl.drawElements(gl.POINTS, indexData.length, gl.UNSIGNED_INT, 0);
-        console.log("DRAW CALL");
+        let vSquarePosition = gl.getAttribLocation(program, "vSquarePosition");
+        gl.vertexAttribPointer(vSquarePosition, 4, gl.FLOAT, false, 40, 0); //stride is 56 bytes total for position, normal, tangent texcoord
+        gl.enableVertexAttribArray(vSquarePosition);
+
+        let vSquareColor = gl.getAttribLocation(program, "vSquareColor");
+        gl.vertexAttribPointer(vSquareColor, 4, gl.FLOAT, false, 40, 16); //stride is 56 bytes total for position, normal, tangent texcoord
+        gl.enableVertexAttribArray(vSquareColor);
+
+        let vTexCoord = gl.getAttribLocation(program, "texCoord");
+        gl.vertexAttribPointer(vTexCoord, 2, gl.FLOAT, false, 40, 32);
+        gl.enableVertexAttribArray(vTexCoord);
+        drawSquares = 1;
+        gl.uniform1i(squaresActive, drawSquares);
+        mv = mv.mult(translate(75, 0, 0));
+        gl.uniformMatrix4fv(umv, false, mv.flatten());
+        gl.drawArrays(gl.TRIANGLE_FAN, 0, squarePoints.length/3);
     }
 }
